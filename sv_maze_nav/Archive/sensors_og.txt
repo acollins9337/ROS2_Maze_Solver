@@ -1,0 +1,93 @@
+
+        ## Sensors
+
+import math
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import Pose2D
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy, QoSHistoryPolicy
+
+class Sensors(Node):
+    def __init__(self):
+        super().__init__('sensor')
+
+        self.fov = math.pi/6
+        self.fov_wide = math.pi/2
+        #self.dist = .46
+
+        scan_qos_profile = QoSProfile(depth=5)
+        scan_qos_profile.history = QoSHistoryPolicy.KEEP_LAST
+        scan_qos_profile.durability = QoSDurabilityPolicy.VOLATILE
+        scan_qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT
+
+        self._lidar_sub = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self._lidar_callback,
+            scan_qos_profile)
+        
+        self._dist_pub = self.create_publisher(
+            Pose2D,
+            '/object_dist',
+            10)
+        
+    def _lidar_callback(self, scan:LaserScan):
+        pose_dist = Pose2D()
+
+        # Creating list of angles (Lidar does not give us that)
+        n = len(scan.ranges)
+        angles = scan.angle_min + np.arange(n) * scan.angle_increment
+
+        ####self.get_logger().info('Angles Pre Wrap: {}'.format(angles))
+
+        # Only looking at objects ahead of us - Boolean masking
+
+        #angles = np.where(angles > np.pi, angles- 2*np.pi, angles)
+        angles = (angles + np.pi) % (2 * np.pi) - np.pi
+
+
+
+        # Mask for field of view
+        mask = np.abs(angles) <= (self.fov/2)
+        angles = angles[mask]
+        ranges = np.array(scan.ranges)[mask]
+
+        # Mask for nan and infinite
+        filt = np.isfinite(ranges)
+
+        angles = angles[filt]
+        ranges = ranges[filt]
+
+        ## List of ranges and angles that are non infinite and within field of view
+
+        if not np.any(ranges):
+            pose_dist.x = 1.0
+            pose_dist.y = -1.0
+            pose_dist.theta = 1.0
+            self._dist_pub.publish(pose_dist)
+            
+
+        idx = int(np.argmin(ranges))
+        min_angle = angles[idx]
+        min_dist = ranges[idx]
+
+        pose_dist.x = float(min_dist)
+        pose_dist.y = 0.0
+        pose_dist.theta = float(min_angle)
+
+        '''self.get_logger().info(
+				f"[SENSOR]"
+				f"min_dist ={min_dist:.3f}"
+			)'''
+        
+        self._dist_pub.publish(pose_dist)
+
+def main():
+    rclpy.init()
+    rclpy.spin(Sensors())
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,272 @@
+# Nav Maze
+
+import cv2
+import rclpy
+import math
+import numpy as np
+from rclpy.node import Node
+from geometry_msgs.msg import Twist, Pose2D, Point
+from std_msgs.msg import Bool, Int32, Float32
+from nav_msgs.msg import Odometry
+from rclpy.duration import Duration
+from sensor_msgs.msg import CompressedImage
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy, QoSHistoryPolicy
+
+# from sv_maze_nav.sign_id_action_client import SignIDActionClient
+#from sv_maze_nav.move_robot_client import MoveRobotClient
+
+class NavMaze(Node):
+    def __init__(self):
+        super().__init__('navigator')
+
+        self.skirt = .6
+        self.close = .2
+        self.grid = .94
+
+        self.min_dist = 10.0
+        self.min_angle = 0.0
+        self.debug = 0.0
+
+        self.angle_tol = 0.0 #math.pi/42
+
+        #self.waiting_for_goal = False
+        self.latest_prediction = None
+        self.need_align = True
+
+        self._dist_sub = self.create_subscription(
+            Pose2D,
+            '/object_dist',
+            self._dist_callback,
+            10)
+        
+        self._wp_pub = self.create_publisher(
+            Pose2D,
+            '/maze_wp',
+            10
+        )
+
+        self._sign_sub = self.create_subscription(
+            Int32,
+            '/sign_result',
+            self._result_callback,
+            10
+        )
+
+        '''self._pred_pub = self.create_publisher(
+            Int32,
+            '/pred',
+            10
+        )'''
+
+        self._done_sub = self.create_subscription(
+            Bool,
+            '/wp_done',
+            self._done_callback,
+            10
+        )
+
+        self._ang_sub = self.create_subscription(
+            Float32,
+            '/ang_err',
+            self._ang_callback,
+            10
+        )
+        
+        #Set up QoS Profiles for passing images over WiFi
+        image_qos_profile = QoSProfile(depth=5)
+        image_qos_profile.history = QoSHistoryPolicy.KEEP_LAST
+        image_qos_profile.durability = QoSDurabilityPolicy.VOLATILE 
+        image_qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT 
+
+        #Declare that the minimal_video_subscriber node is subcribing to the /camera/image/compressed topic.
+        '''self._video_subscriber = self.create_subscription(
+                CompressedImage,
+                '/image_raw/compressed',
+                self._image_callback,
+                image_qos_profile)
+        self._video_subscriber # Prevents unused variable warning.'''
+
+        #self.identifier = SignIDActionClient(self)
+        #self.robot = MoveRobotClient()
+        self.timer = self.create_timer(.1, self._state_callback)
+        
+    def _dist_callback(self, d:Pose2D):
+        self.min_dist = d.x
+        self.min_angle = d.theta
+        self.debug = d.y
+
+    def _ang_callback(self, a:Float32):
+        self.ang_err = a.data
+
+    def _result_callback(self, ret:Int32):
+        '''
+        Obtain the predictions from the KNN model then store them as the latest prediction
+        
+        Args:
+            ret (Int32): .data field contains the label of the prediction of the KNN model
+        '''
+        if ret.data == -1:
+            self.latest_prediction = None
+        else:
+            self.latest_prediction = ret.data
+    
+
+    def _done_callback(self, msg:Bool):
+        if msg.data:
+            self.get_logger().info("Nav2 goal done - resuming SM")
+            self.waiting_for_goal = False
+
+    '''def _image_callback(self, CompressedImage):	
+        # The "CompressedImage" is transformed to a color image in BGR space and is store in "_imgBGR"
+        # Convert compressed image data to numpy array
+        np_arr = np.frombuffer(CompressedImage.data, np.uint8)
+        # Decode image using OpenCV
+        self.img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)'''
+
+
+    def _state_callback(self):
+
+        '''if self.robot.nav_busy == True or self.identifier.read_busy == True or self.img is None:
+            return
+        if self.nav_busy:
+            return'''
+        
+        wp = Pose2D()
+        
+        '''if self.waiting_for_goal:
+            #self.get_logger().info("SM Waiting for NAV")
+            return'''
+        if self.latest_prediction is None:
+            self.get_logger().info("No Pred")
+            return
+        
+        elif self.need_align:
+            wp.x = 0.0 #-self.grid
+            wp.y = 0.0
+            wp.theta = -self.ang_err
+
+            self.get_logger().info("I am ALIGNING")
+
+            self.need_align = False
+        
+        elif self.min_dist <= self.skirt:
+            #self.get_logger().info("\n[ROBOT SEES WALL]")
+            
+            '''self.identifier.predict(self.img)
+
+            rclpy.spin_once(self.identifier)
+
+            prediction = int(self.identifier.latest_result)'''
+
+            #prediction = int(1)
+            prediction = self.latest_prediction
+            self.get_logger().info(f"[SEE WALL] Pred {prediction}")
+            #self._pred_pub .publish(prediction)
+            
+
+            #self.waiting_for_goal = True
+
+            if prediction == 1: # Left
+                #waypoint = (0.0, self.grid, -math.pi/2)
+                
+                wp.x = 0.0
+                wp.y = 0.0 #self.grid
+                wp.theta = math.pi/2 - self.angle_tol
+
+                self.need_align = True
+
+            elif prediction == 2: # Right
+                #waypoint = (0.0, -self.grid, math.pi/2)
+                #self.robot.send_goal(waypoint)
+
+                wp.x = 0.0
+                wp.y = 0.0 #-self.grid
+                wp.theta = -math.pi/2 + math.pi/50
+
+                self.need_align = True
+
+            elif prediction == 3 or prediction == 4: # Turn around
+                waypoint = (-self.grid, 0.0, math.pi)
+                
+                wp.x = 0.0 #-self.grid
+                wp.y = 0.0
+                wp.theta = math.pi
+
+                self.need_align = True
+
+            elif prediction == 0:
+                waypoint = (self.grid, 0.0, math.pi)
+                
+                err = self.min_dist - self.grid/2 # 
+
+                wp.x = 0.0
+                wp.y = 0.0
+                wp.theta = math.pi/6
+
+                self.need_align = True
+
+                '''if err > 0:
+                    wp.x = err
+                    wp.y = 0.0
+                    wp.theta = 0.0
+
+                elif err <= 0:
+                    wp.x = err
+                    wp.y = 0.0
+                    wp.theta = 0.0'''
+
+                '''if abs(err) < .05:
+                    wp.x = 0.0
+                    wp.y = 0.0
+                    wp.theta = math.pi/2 - self.angle_tol
+
+                else:
+                    wp.x = err
+                    wp.y = 0.0
+                    wp.theta = 0.0'''
+                
+
+            elif prediction == 5: # Goal
+                #return
+                self.get_logger().info("Goal Reached Yeahhhhh")
+                #rclpy.shutdown()
+                wp.x = 0.0
+                wp.y = 0.0
+                wp.theta = 0.0
+                return ############################
+
+
+            #self.get_logger().info(f"Local WP= ({wp.x:.2f}), ({wp.y:.2f})")
+
+            #self._wp_pub.publish(wp)
+
+            # if self._wp_pub.get_subscription_count() > 0:
+            # 	self.waiting_for_goal = True
+
+        elif self.min_dist > self.skirt and self.min_dist <= self.grid:
+            wp.x = self.grid/4
+            wp.y = 0.0
+            wp.theta = 0.0
+                        
+        else:
+            #wp = Pose2D()
+            wp.x = self.grid
+            wp.y = 0.0
+            wp.theta = 0.0
+
+            # self.get_logger().info(f"[NO WALL SEEN]")
+            # self.get_logger().info(f"Local WP= ({wp.x:.2f}), ({wp.y:.2f})")
+
+            #self._wp_pub.publish(wp)
+            # if self._wp_pub.get_subscription_count() > 0:
+            # 	self.waiting_for_goal = True
+
+        self._wp_pub.publish(wp)
+
+def main():
+    rclpy.init()
+    rclpy.spin(NavMaze())
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
