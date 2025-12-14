@@ -8,3 +8,7 @@ The final software package was able to solve the maze in just under five minutes
 ## Credit
 - Aditya Rao
 - Sean Wilson
+
+
+Posted with permission
+
